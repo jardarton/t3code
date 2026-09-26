@@ -34,9 +34,9 @@ let
         fetcherVersion = 4;
         hash =
           if desktop then
-            "sha256-gEY2em9pNTC1EuVX0V3L/Wu1apZ+BKBXxALEcPQ/pwA="
+            "sha256-kHTYBQ1306FztZiyUr7KPEKAY4gtXGPdM2Obo42aziM="
           else
-            "sha256-IwUWzYd7WgRbXEiwqwk8KBaR7kmo1bOD+br6iHGqfk8=";
+            "sha256-qy3rMJgBtfgNgZFNMA5NHyxSbDRxMu8yRokuaHS6EpI=";
       };
       meta = old.meta // {
         mainProgram = if desktop then "t3code-desktop" else "t3";
