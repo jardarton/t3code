@@ -25,6 +25,24 @@ T3 Code can use your installed Codex and its existing login. Run `codex login`
 on the environment's machine to sign in. [Provider setup](./install.md#providers)
 covers installation and custom configuration.
 
+## Use a thread in Herdr
+
+Start Herdr on the environment running T3 Code. When the `herdr` command is
+available to the T3 server and a Herdr workspace is open, new Codex threads
+create tabs in Herdr's active workspace. T3 keeps the Codex socket in its own
+data directory. No T3 setting is required.
+
+To always use one workspace, find its ID with `herdr workspace list` and set
+`T3CODE_HERDR_WORKSPACE_ID` in the Codex provider's environment variables in
+**Settings > Providers**. Set `HERDR_SESSION` there too if Herdr uses a named
+session. `T3CODE_CODEX_SOCKET_DIR` can override the socket directory with an
+absolute, private path.
+
+Each Codex thread opens an unfocused Herdr tab. When the first turn starts,
+the tab starts Codex connected to the same running session. Returning to an
+existing thread starts Codex in its tab immediately. Archiving or deleting the
+thread closes the tab. This integration currently applies to Codex threads.
+
 ## Use multiple accounts
 
 Add another ChatGPT account in **Settings → Providers**, then select the account

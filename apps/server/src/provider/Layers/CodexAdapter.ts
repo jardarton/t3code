@@ -34,7 +34,10 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as NodeCrypto from "node:crypto";
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodePath from "node:path";
 import * as Crypto from "effect/Crypto";
+import * as Data from "effect/Data";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
@@ -72,6 +75,15 @@ import {
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 import {
+  closeCodexHerdrTab,
+  createCodexHerdrTab,
+  hasHerdrWorkspace,
+  makeHerdrCommand,
+  startCodexInHerdrTab,
+  type CodexHerdrTab,
+  type HerdrCommand,
+} from "./CodexHerdrTab.ts";
+import {
   type CodexRateLimitSnapshot,
   codexRateLimitsToUpdate,
   codexUsageLimitMessage,
@@ -86,6 +98,7 @@ const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 
 import { classifyCodexManagedError } from "../CodexManagedErrors.ts";
 const PROVIDER = ProviderDriverKind.make("codex");
+class CodexHerdrError extends Data.TaggedError("CodexHerdrError")<{ cause: unknown }> {}
 
 export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
@@ -107,6 +120,7 @@ export interface CodexAdapterLiveOptions {
   readonly onManagedConnectionRevoked?: Effect.Effect<void>;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly herdrCommand?: HerdrCommand;
 }
 
 interface CodexAdapterSessionContext {
@@ -117,6 +131,7 @@ interface CodexAdapterSessionContext {
   readonly turnTokenUsage: CodexTurnTokenUsageState;
   readonly startInput: Parameters<CodexAdapterShape["startSession"]>[0];
   readonly runtimeRevision?: string;
+  readonly herdrTab?: CodexHerdrTab;
   stopped: boolean;
 }
 
@@ -780,6 +795,26 @@ function itemTitle(
 }
 
 function itemDetail(itemType: CanonicalItemType, item: CodexLifecycleItem): string | undefined {
+  if (item.type === "userMessage") {
+    const content = item.content.map((input) => {
+      switch (input.type) {
+        case "text":
+          return input.text;
+        case "image":
+        case "localImage":
+          return "[Image]";
+        case "audio":
+        case "localAudio":
+          return "[Audio]";
+        case "skill":
+          return `[Skill: ${input.name}]`;
+        case "mention":
+          return `[Mention: ${input.name}]`;
+      }
+    });
+    return trimText(content.join("\n"));
+  }
+
   const itemRecord = item as Record<string, unknown>;
   const action = itemRecord.action as Record<string, unknown> | undefined;
   const actionQueries = Array.isArray(action?.queries) ? action.queries : [];
@@ -2261,6 +2296,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
+  const environment = options?.environment ?? process.env;
+  const herdrWorkspaceId = environment.T3CODE_HERDR_WORKSPACE_ID?.trim();
+  const herdrCommand = options?.herdrCommand ?? makeHerdrCommand(environment);
+  const herdrProbeCommand = options?.herdrCommand ?? makeHerdrCommand(environment, 750);
 
   const startSession: CodexAdapterShape["startSession"] = (input) =>
     Effect.scoped(
@@ -2303,10 +2342,27 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+        // Test runtimes do not inspect the host's Herdr instance unless a
+        // command runner is injected for the test. Live sessions probe once
+        // per start so Herdr can be started after the T3 server.
+        const herdrAvailable = herdrWorkspaceId
+          ? true
+          : options?.makeRuntime === undefined || options.herdrCommand !== undefined
+            ? yield* Effect.tryPromise({
+                try: () => hasHerdrWorkspace(herdrProbeCommand),
+                catch: (cause) => new CodexHerdrError({ cause }),
+              }).pipe(Effect.orElseSucceed(() => false))
+            : false;
+        const socketDir =
+          environment.T3CODE_CODEX_SOCKET_DIR?.trim() ||
+          (herdrAvailable ? NodePath.join(serverConfig.stateDir, "codex-sockets") : undefined);
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
           cwd: input.cwd ?? process.cwd(),
+          ...(socketDir
+            ? { socketPath: NodePath.resolve(socketDir, `${input.threadId}.sock`) }
+            : {}),
           ...(options?.models ? { models: options.models } : {}),
           binaryPath: effectiveConfig.binaryPath,
           launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, effectiveEnvironment),
@@ -2346,6 +2402,43 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         // after the stop and often sparse, so keep the session's merged view of
         // it and read it when a turn fails on the limit.
         let rateLimits: CodexRateLimitSnapshot | undefined;
+        let herdrTab: CodexHerdrTab | undefined;
+        let herdrStarted = false;
+        let firstTurnStarted = false;
+        let providerThreadId: string | undefined;
+        const launchHerdr = Effect.gen(function* () {
+          if (
+            !herdrCommand ||
+            !herdrTab ||
+            !providerThreadId ||
+            !runtimeInput.socketPath ||
+            herdrStarted
+          ) {
+            return;
+          }
+          herdrStarted = true;
+          const tab = herdrTab;
+          const socketPath = runtimeInput.socketPath;
+          const sessionId = providerThreadId;
+          yield* Effect.tryPromise({
+            try: () =>
+              startCodexInHerdrTab(herdrCommand, {
+                paneId: tab.paneId,
+                binaryPath: runtimeInput.binaryPath,
+                providerThreadId: sessionId,
+                socketPath,
+              }),
+            catch: (cause) => new CodexHerdrError({ cause }),
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("codex.herdr.tab-start-failed", {
+                threadId: input.threadId,
+                tabId: tab.tabId,
+                error,
+              }),
+            ),
+          );
+        });
         const createRuntime = options?.makeRuntime ?? makeCodexSessionRuntime;
         const runtime = yield* createRuntime(runtimeInput).pipe(
           Effect.provideService(Scope.Scope, sessionScope),
@@ -2515,6 +2608,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               return;
             }
             yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
+            // Codex saves a fresh thread's rollout when its first turn starts;
+            // `codex resume` fails with "no rollout found" before that.
+            if (event.method === "turn/started") {
+              firstTurnStarted = true;
+              yield* launchHerdr.pipe(Effect.forkIn(sessionScope));
+            }
           }),
         ).pipe(Effect.forkIn(sessionScope));
 
@@ -2537,6 +2636,43 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ),
         );
 
+        providerThreadId = isCodexResumeCursorSchema(started.resumeCursor)
+          ? started.resumeCursor.threadId
+          : undefined;
+        if (herdrAvailable && runtimeInput.socketPath && providerThreadId) {
+          const codexHome = runtimeInput.homePath ?? runtimeInput.environment?.CODEX_HOME;
+          herdrTab = yield* Effect.tryPromise({
+            try: () =>
+              createCodexHerdrTab(herdrCommand, {
+                ...(herdrWorkspaceId ? { workspaceId: herdrWorkspaceId } : {}),
+                cwd: runtimeInput.cwd,
+                threadId: input.threadId,
+                ...(codexHome ? { codexHome } : {}),
+              }),
+            catch: (cause) => new CodexHerdrError({ cause }),
+          }).pipe(
+            Effect.tap((tab) =>
+              Effect.logInfo("codex.herdr.tab-created", {
+                threadId: input.threadId,
+                tabId: tab.tabId,
+              }),
+            ),
+            Effect.catch((error) =>
+              Effect.logWarning("codex.herdr.tab-create-failed", {
+                threadId: input.threadId,
+                error,
+              }).pipe(Effect.as(undefined)),
+            ),
+          );
+          if (
+            firstTurnStarted ||
+            (isCodexResumeCursorSchema(input.resumeCursor) &&
+              input.resumeCursor.threadId === providerThreadId)
+          ) {
+            yield* launchHerdr.pipe(Effect.forkIn(sessionScope));
+          }
+        }
+
         sessions.set(input.threadId, {
           threadId: input.threadId,
           scope: sessionScope,
@@ -2545,6 +2681,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           turnTokenUsage,
           startInput: input,
           ...(resolved ? { runtimeRevision: resolved.revision } : {}),
+          ...(herdrTab ? { herdrTab } : {}),
           stopped: false,
         });
         sessionScopeTransferred = true;
@@ -2761,6 +2898,21 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     }
     session.stopped = true;
     sessions.delete(session.threadId);
+    if (herdrCommand && session.herdrTab) {
+      const tabId = session.herdrTab.tabId;
+      yield* Effect.tryPromise({
+        try: () => closeCodexHerdrTab(herdrCommand, tabId),
+        catch: (cause) => new CodexHerdrError({ cause }),
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("codex.herdr.tab-close-failed", {
+            threadId: session.threadId,
+            tabId,
+            error,
+          }),
+        ),
+      );
+    }
     yield* session.runtime.close.pipe(Effect.ignore);
     yield* Effect.ignore(Scope.close(session.scope, Exit.void));
     yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);

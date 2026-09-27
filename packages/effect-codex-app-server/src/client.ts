@@ -254,6 +254,13 @@ export const layerChildProcess = (
 ): Layer.Layer<CodexAppServerClient> =>
   Layer.effect(CodexAppServerClient, makeChildProcessClient(handle, options));
 
+export const layerStdio = (
+  stdio: Stdio.Stdio,
+  options: CodexAppServerClientOptions = {},
+  terminationError?: Effect.Effect<CodexError.CodexAppServerError>,
+): Layer.Layer<CodexAppServerClient> =>
+  Layer.effect(CodexAppServerClient, make(stdio, options, terminationError));
+
 const makeChildProcessClient = Effect.fn(
   "effect-codex-app-server/CodexAppServerClient.makeChildProcessClient",
 )(function* (handle: ChildProcessSpawner.ChildProcessHandle, options: CodexAppServerClientOptions) {

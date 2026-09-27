@@ -717,6 +717,237 @@ function codexTurnEvent(method: "turn/started" | "turn/completed", turnId: strin
   };
 }
 
+const herdrCalls: Array<ReadonlyArray<string>> = [];
+let notifyHerdrPaneRun: (() => void) | undefined;
+const herdrRuntimeFactory = makeRuntimeFactory();
+const herdrLayer = it.layer(
+  Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      const codexConfig = decodeCodexSettings({});
+      return yield* makeCodexAdapter(codexConfig, {
+        environment: {
+          T3CODE_CODEX_SOCKET_DIR: "/tmp/t3-codex-herdr-test",
+          T3CODE_HERDR_WORKSPACE_ID: "workspace-3",
+        },
+        makeRuntime: (options) =>
+          Effect.gen(function* () {
+            const runtime = yield* herdrRuntimeFactory.factory(options);
+            runtime.startImpl.mockImplementation(() =>
+              Promise.resolve({
+                provider: ProviderDriverKind.make("codex"),
+                status: "ready" as const,
+                runtimeMode: options.runtimeMode,
+                threadId: options.threadId,
+                cwd: options.cwd,
+                resumeCursor: { threadId: "provider-thread-1" },
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              } satisfies ProviderSession),
+            );
+            return runtime;
+          }),
+        herdrCommand: async (args) => {
+          herdrCalls.push([...args]);
+          if (args[1] === "create") {
+            return JSON.stringify({
+              result: { tab: { tab_id: "tab-7" }, root_pane: { pane_id: "pane-9" } },
+            });
+          }
+          if (args[1] === "run") notifyHerdrPaneRun?.();
+          return "{}";
+        },
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+herdrLayer("CodexAdapterLive Herdr lifecycle", (it) => {
+  it.effect(
+    "creates a tab for a fresh thread, starts Codex when its first turn starts, and closes on stop",
+    () =>
+      Effect.gen(function* () {
+        herdrCalls.length = 0;
+        const paneRunObserved = new Promise<void>((resolve) => {
+          notifyHerdrPaneRun = resolve;
+        });
+        const adapter = yield* CodexAdapter;
+        const threadId = asThreadId("thread-1");
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          cwd: "/tmp/project",
+          runtimeMode: "full-access",
+        });
+
+        NodeAssert.deepStrictEqual(herdrCalls[0], [
+          "tab",
+          "create",
+          "--workspace",
+          "workspace-3",
+          "--cwd",
+          "/tmp/project",
+          "--label",
+          "T3 Codex thread-1",
+          "--no-focus",
+        ]);
+        NodeAssert.equal(herdrCalls.length, 1);
+
+        const runtime = herdrRuntimeFactory.lastRuntime;
+        NodeAssert.ok(runtime);
+        const started = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.started"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* runtime.emit(codexTurnEvent("turn/started", "turn-1"));
+        yield* Fiber.join(started);
+        yield* Effect.promise(() => paneRunObserved);
+        NodeAssert.deepStrictEqual(herdrCalls[1], [
+          "pane",
+          "run",
+          "pane-9",
+          "'codex' resume 'provider-thread-1' --remote 'unix:///tmp/t3-codex-herdr-test/thread-1.sock'",
+        ]);
+
+        yield* adapter.stopSession(threadId);
+        NodeAssert.deepStrictEqual(herdrCalls[2], ["tab", "close", "tab-7"]);
+        NodeAssert.equal(herdrCalls.length, 3);
+      }),
+  );
+
+  it.effect("starts Codex immediately when a saved thread resumes", () =>
+    Effect.gen(function* () {
+      herdrCalls.length = 0;
+      const paneRunObserved = new Promise<void>((resolve) => {
+        notifyHerdrPaneRun = resolve;
+      });
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-1");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+        resumeCursor: { threadId: "provider-thread-1" },
+      });
+
+      yield* Effect.promise(() => paneRunObserved);
+      NodeAssert.deepStrictEqual(
+        herdrCalls.map((args) => args.slice(0, 2)),
+        [
+          ["tab", "create"],
+          ["pane", "run"],
+        ],
+      );
+      yield* adapter.stopSession(threadId);
+      NodeAssert.deepStrictEqual(herdrCalls[2], ["tab", "close", "tab-7"]);
+    }),
+  );
+});
+
+const autoHerdrCalls: Array<ReadonlyArray<string>> = [];
+let autoHerdrRunning = true;
+const autoHerdrRuntimeFactory = makeRuntimeFactory();
+const autoHerdrLayer = it.layer(
+  Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      const codexConfig = decodeCodexSettings({});
+      return yield* makeCodexAdapter(codexConfig, {
+        environment: {},
+        makeRuntime: (options) =>
+          Effect.gen(function* () {
+            const runtime = yield* autoHerdrRuntimeFactory.factory(options);
+            runtime.startImpl.mockImplementation(() =>
+              Promise.resolve({
+                provider: ProviderDriverKind.make("codex"),
+                status: "ready" as const,
+                runtimeMode: options.runtimeMode,
+                threadId: options.threadId,
+                cwd: options.cwd,
+                resumeCursor: { threadId: "provider-thread-1" },
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              } satisfies ProviderSession),
+            );
+            return runtime;
+          }),
+        herdrCommand: async (args) => {
+          autoHerdrCalls.push([...args]);
+          if (args[0] === "workspace") {
+            if (!autoHerdrRunning) throw new Error("Herdr is not running");
+            return JSON.stringify({ result: { workspaces: [{ workspace_id: "workspace-3" }] } });
+          }
+          if (args[1] === "create") {
+            return JSON.stringify({
+              result: { tab: { tab_id: "tab-7" }, root_pane: { pane_id: "pane-9" } },
+            });
+          }
+          return "{}";
+        },
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+autoHerdrLayer("CodexAdapterLive automatic Herdr discovery", (it) => {
+  it.effect("uses the active workspace and a T3-owned socket only while Herdr is running", () =>
+    Effect.gen(function* () {
+      autoHerdrRunning = true;
+      autoHerdrCalls.length = 0;
+      const adapter = yield* CodexAdapter;
+      const serverConfig = yield* ServerConfig;
+      const threadId = asThreadId("thread-auto");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+
+      NodeAssert.deepStrictEqual(autoHerdrCalls[0], ["workspace", "list"]);
+      NodeAssert.deepStrictEqual(autoHerdrCalls[1], [
+        "tab",
+        "create",
+        "--cwd",
+        "/tmp/project",
+        "--label",
+        "T3 Codex ead-auto",
+        "--no-focus",
+      ]);
+      NodeAssert.equal(
+        autoHerdrRuntimeFactory.lastRuntime?.options.socketPath,
+        NodePath.join(serverConfig.stateDir, "codex-sockets", "thread-auto.sock"),
+      );
+      yield* adapter.stopSession(threadId);
+
+      autoHerdrRunning = false;
+      autoHerdrCalls.length = 0;
+      const offlineThreadId = asThreadId("thread-offline");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: offlineThreadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      NodeAssert.deepStrictEqual(autoHerdrCalls, [["workspace", "list"]]);
+      NodeAssert.equal(autoHerdrRuntimeFactory.lastRuntime?.options.socketPath, undefined);
+      yield* adapter.stopSession(offlineThreadId);
+    }),
+  );
+});
+
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
   it.effect("calculates one Codex turn total from cumulative counters", () =>
     Effect.gen(function* () {
@@ -1278,6 +1509,46 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       NodeAssert.equal(firstEvent.value.itemId, "msg_1");
       NodeAssert.equal(firstEvent.value.turnId, "turn-1");
       NodeAssert.equal(firstEvent.value.payload.itemType, "assistant_message");
+    }),
+  );
+
+  it.effect("preserves Codex user message content for CLI prompt ingestion", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-cli-prompt"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("cli-prompt"),
+        payload: {
+          completedAtMs: 1_778_000_000_000,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            id: "cli-prompt",
+            type: "userMessage",
+            content: [
+              { type: "text", text: "Review this" },
+              { type: "localImage", path: "/tmp/screenshot.png" },
+              { type: "text", text: "and summarize it" },
+            ],
+          },
+        },
+      });
+
+      const event = Option.getOrThrow(yield* Fiber.join(eventFiber));
+      NodeAssert.equal(event.type, "item.completed");
+      if (event.type === "item.completed") {
+        NodeAssert.equal(event.payload.itemType, "user_message");
+        NodeAssert.equal(event.payload.detail, "Review this\n[Image]\nand summarize it");
+      }
+      yield* adapter.stopSession(asThreadId("thread-1"));
     }),
   );
 

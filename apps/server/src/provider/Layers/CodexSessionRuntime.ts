@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
 import {
   ApprovalRequestId,
   DEFAULT_MODEL,
@@ -39,6 +43,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
+import { makeCodexSocketStdio } from "./CodexSocketStdio.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import {
   buildCodexAdditionalContext,
@@ -183,6 +188,7 @@ export interface CodexSessionRuntimeOptions {
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
   readonly appServerArgs?: ReadonlyArray<string>;
+  readonly socketPath?: string;
   /** The provider's model list; supplies the display name for runtime info. */
   readonly models?: Effect.Effect<ReadonlyArray<ServerProviderModel>>;
   /** Capabilities the session's `t3-code` MCP credential grants; drives the prompt blocks. */
@@ -1331,7 +1337,21 @@ export const makeCodexSessionRuntime = (
       ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
     };
     const extendEnv = options.environment === undefined;
-    const appServerArgs = codexSessionAppServerArgs(options.appServerArgs, options.launchArgs);
+    const socketPath = options.socketPath;
+    if (socketPath) {
+      yield* Effect.try({
+        try: () => NodeFS.mkdirSync(NodePath.dirname(socketPath), { recursive: true, mode: 0o700 }),
+        catch: (cause) =>
+          new CodexErrors.CodexAppServerSpawnError({
+            command: `prepare socket directory for ${socketPath}`,
+            cause,
+          }),
+      });
+    }
+    const appServerArgs = [
+      ...codexSessionAppServerArgs(options.appServerArgs, options.launchArgs),
+      ...(options.socketPath ? ["--listen", `unix://${options.socketPath}`] : []),
+    ];
     const spawnCommand = yield* resolveSpawnCommand(options.binaryPath, appServerArgs, {
       env,
       extendEnv,
@@ -1357,7 +1377,21 @@ export const makeCodexSessionRuntime = (
         ),
       );
 
-    const clientContext = yield* CodexClient.layerChildProcess(child).pipe(
+    const clientLayer = options.socketPath
+      ? CodexClient.layerStdio(
+          yield* makeCodexSocketStdio(options.socketPath).pipe(
+            Effect.provideService(Scope.Scope, runtimeScope),
+          ),
+        )
+      : CodexClient.layerChildProcess(child);
+    if (options.socketPath) {
+      yield* Stream.runDrain(child.stderr).pipe(
+        Effect.ignore,
+        Effect.provideService(Scope.Scope, runtimeScope),
+        Effect.forkScoped,
+      );
+    }
+    const clientContext = yield* clientLayer.pipe(
       Layer.build,
       Effect.provideService(Scope.Scope, runtimeScope),
     );
@@ -2506,6 +2540,14 @@ export const makeCodexSessionRuntime = (
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
       yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
+      if (options.socketPath) {
+        yield* Effect.logInfo("codex.session.socket-ready", {
+          threadId: options.threadId,
+          providerThreadId,
+          socketPath: options.socketPath,
+          ...(resolvedHomePath ? { codexHome: resolvedHomePath } : {}),
+        });
+      }
       return session;
     });
 

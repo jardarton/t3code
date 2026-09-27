@@ -482,6 +482,106 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("turn failed");
   });
 
+  it("imports a Codex CLI prompt without duplicating a T3-owned prompt", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const provider = ProviderDriverKind.make("codex");
+    const externalTurnId = asTurnId("turn-from-cli");
+
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("evt-cli-turn-started"),
+        provider,
+        threadId,
+        turnId: externalTurnId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+      },
+      {
+        type: "item.completed",
+        eventId: asEventId("evt-cli-user-message"),
+        provider,
+        threadId,
+        turnId: externalTurnId,
+        itemId: asItemId("cli-user-message"),
+        createdAt: "2026-01-01T00:00:02.000Z",
+        payload: { itemType: "user_message", detail: "Prompt from Codex CLI" },
+      },
+    ]);
+
+    let thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.messages.filter((message) => message.role === "user").map((message) => message.text),
+    ).toEqual(["Prompt from Codex CLI"]);
+    expect((await harness.readTurn(externalTurnId))?.pendingMessageId).toBeNull();
+
+    await harness.emitAndDrain([
+      {
+        type: "item.completed",
+        eventId: asEventId("evt-cli-user-message-replayed"),
+        provider,
+        threadId,
+        turnId: externalTurnId,
+        itemId: asItemId("cli-user-message"),
+        createdAt: "2026-01-01T00:00:02.000Z",
+        payload: { itemType: "user_message", detail: "Prompt from Codex CLI" },
+      },
+    ]);
+    thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+
+    await harness.emitAndDrain([
+      {
+        type: "turn.completed",
+        eventId: asEventId("evt-cli-turn-completed"),
+        provider,
+        threadId,
+        turnId: externalTurnId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+        payload: { state: "completed" },
+      },
+    ]);
+
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-t3-owned-turn"),
+      threadId,
+      message: {
+        messageId: MessageId.make("t3-owned-prompt"),
+        role: "user",
+        text: "Prompt from T3",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: "2026-01-01T00:00:03.000Z",
+    });
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("evt-t3-turn-started"),
+        provider,
+        threadId,
+        turnId: asTurnId("turn-from-t3"),
+        createdAt: "2026-01-01T00:00:04.000Z",
+      },
+      {
+        type: "item.completed",
+        eventId: asEventId("evt-t3-user-message"),
+        provider,
+        threadId,
+        turnId: asTurnId("turn-from-t3"),
+        itemId: asItemId("t3-user-message"),
+        createdAt: "2026-01-01T00:00:05.000Z",
+        payload: { itemType: "user_message", detail: "Prompt from T3" },
+      },
+    ]);
+    thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.messages.filter((message) => message.role === "user").map((message) => message.text),
+    ).toEqual(["Prompt from Codex CLI", "Prompt from T3"]);
+  });
+
   it.each([
     { delivery: "buffered", responseStreamingMode: "paragraph" as const },
     { delivery: "streamed", responseStreamingMode: "token" as const },
