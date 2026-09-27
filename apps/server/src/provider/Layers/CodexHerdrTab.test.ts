@@ -68,25 +68,96 @@ describe("Codex Herdr tab commands", () => {
     );
   });
 
-  it("detects a running workspace and lets Herdr choose the active workspace", async () => {
+  it("places a thread in the workspace already using its folder", async () => {
     const calls: Array<ReadonlyArray<string>> = [];
     const run: HerdrCommand = async (args) => {
       calls.push(args);
-      return args[0] === "workspace"
-        ? JSON.stringify({ result: { workspaces: [{ workspace_id: "workspace-3" }] } })
-        : JSON.stringify({
-            result: { tab: { tab_id: "tab-7" }, root_pane: { pane_id: "pane-9" } },
-          });
+      if (args[0] === "workspace") {
+        return JSON.stringify({ result: { workspaces: [{ workspace_id: "workspace-3" }] } });
+      }
+      if (args[0] === "pane") {
+        return JSON.stringify({
+          result: { panes: [{ workspace_id: "workspace-3", cwd: "/tmp/project" }] },
+        });
+      }
+      return JSON.stringify({
+        result: { tab: { tab_id: "tab-7" }, root_pane: { pane_id: "pane-9" } },
+      });
     };
     NodeAssert.equal(await hasHerdrWorkspace(run), true);
     await createCodexHerdrTab(run, { cwd: "/tmp/project", threadId: "thread-1" });
     NodeAssert.deepStrictEqual(calls, [
       ["workspace", "list"],
-      ["tab", "create", "--cwd", "/tmp/project", "--label", "T3 Codex thread-1", "--no-focus"],
+      ["workspace", "list"],
+      ["pane", "list"],
+      [
+        "tab",
+        "create",
+        "--workspace",
+        "workspace-3",
+        "--cwd",
+        "/tmp/project",
+        "--label",
+        "T3 Codex thread-1",
+        "--no-focus",
+      ],
     ]);
     NodeAssert.equal(
       await hasHerdrWorkspace(async () => JSON.stringify({ result: { workspaces: [] } })),
-      false,
+      true,
     );
+  });
+
+  it("creates a workspace for an unmatched folder and uses its first tab", async () => {
+    const calls: Array<ReadonlyArray<string>> = [];
+    const run: HerdrCommand = async (args) => {
+      calls.push(args);
+      if (args[0] === "workspace" && args[1] === "list") {
+        return JSON.stringify({ result: { workspaces: [{ workspace_id: "workspace-3" }] } });
+      }
+      if (args[0] === "pane") {
+        return JSON.stringify({
+          result: { panes: [{ workspace_id: "workspace-3", cwd: "/other" }] },
+        });
+      }
+      return JSON.stringify({
+        result: { tab: { tab_id: "tab-7" }, root_pane: { pane_id: "pane-9" } },
+      });
+    };
+    const tab = await createCodexHerdrTab(run, { cwd: "/tmp/project", threadId: "thread-1" });
+    NodeAssert.deepStrictEqual(tab, { tabId: "tab-7", paneId: "pane-9" });
+    NodeAssert.deepStrictEqual(calls, [
+      ["workspace", "list"],
+      ["pane", "list"],
+      ["workspace", "create", "--cwd", "/tmp/project", "--no-focus"],
+      ["tab", "rename", "tab-7", "T3 Codex thread-1"],
+    ]);
+  });
+
+  it("matches a managed worktree even when its panes have changed directory", async () => {
+    const calls: Array<ReadonlyArray<string>> = [];
+    const run: HerdrCommand = async (args) => {
+      calls.push(args);
+      return args[0] === "workspace"
+        ? JSON.stringify({
+            result: {
+              workspaces: [
+                { workspace_id: "workspace-3", worktree: { checkout_path: "/tmp/project" } },
+              ],
+            },
+          })
+        : JSON.stringify({
+            result: { tab: { tab_id: "tab-7" }, root_pane: { pane_id: "pane-9" } },
+          });
+    };
+    await createCodexHerdrTab(run, { cwd: "/tmp/project", threadId: "thread-1" });
+    NodeAssert.deepStrictEqual(
+      calls.map((args) => args.slice(0, 2)),
+      [
+        ["workspace", "list"],
+        ["tab", "create"],
+      ],
+    );
+    NodeAssert.deepStrictEqual(calls[1]?.slice(2, 4), ["--workspace", "workspace-3"]);
   });
 });

@@ -38,14 +38,15 @@ machine. Both T3 and the Codex CLI in that tab connect to the **same running
 Codex app-server and provider thread**. Messages sent from either surface appear
 in the T3 thread. This is Codex-only; the fork does not add a Claude Code bridge.
 
-With Herdr running and at least one workspace open, no T3 configuration is
-needed. On each Codex session start, the server asks `herdr workspace list`
-whether Herdr is available. The probe does not start Herdr. The new tab goes to
-Herdr's active workspace without stealing focus. With no overrides, if Herdr
+With Herdr running, no T3 configuration is needed. On each Codex session start,
+the server asks `herdr workspace list` whether Herdr is available. The probe
+does not start Herdr. A thread opens in the workspace whose worktree checkout
+or pane cwd matches its folder; if none matches, T3 creates a workspace and uses
+its first tab. Neither operation steals focus. With no overrides, if Herdr
 is unavailable, Codex keeps T3's normal stdio transport and no tab is created.
 
-`T3CODE_HERDR_WORKSPACE_ID` pins tabs to one workspace instead of the active
-one and opts into socket mode without the availability probe. `HERDR_SESSION`
+`T3CODE_HERDR_WORKSPACE_ID` pins tabs to one workspace instead of matching the
+folder and opts into socket mode without the availability probe. `HERDR_SESSION`
 selects a named Herdr session when needed.
 `T3CODE_CODEX_SOCKET_DIR` overrides the socket directory. These variables can
 be set in the Codex provider instance's environment or inherited by the T3

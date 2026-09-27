@@ -33,9 +33,56 @@ export async function hasHerdrWorkspace(run: HerdrCommand): Promise<boolean> {
     typeof result === "object" &&
     result !== null &&
     "workspaces" in result &&
-    Array.isArray(result.workspaces) &&
-    result.workspaces.length > 0
+    Array.isArray(result.workspaces)
   );
+}
+
+function readHerdrList(
+  output: string,
+  key: "workspaces" | "panes",
+): Array<Record<string, unknown>> {
+  const response: unknown = JSON.parse(output);
+  if (typeof response !== "object" || response === null || !("result" in response)) {
+    throw new Error(`Herdr did not return ${key}`);
+  }
+  const result = response.result;
+  if (typeof result !== "object" || result === null || !(key in result)) {
+    throw new Error(`Herdr did not return ${key}`);
+  }
+  const entries = (result as Record<string, unknown>)[key];
+  if (!Array.isArray(entries)) throw new Error(`Herdr did not return ${key}`);
+  return entries.filter(
+    (entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null,
+  );
+}
+
+async function workspaceForCwd(run: HerdrCommand, cwd: string): Promise<string | undefined> {
+  const workspaces = readHerdrList(await run(["workspace", "list"]), "workspaces");
+  const target = NodePath.resolve(cwd);
+  for (const workspace of workspaces) {
+    const worktree = workspace.worktree;
+    if (
+      typeof workspace.workspace_id === "string" &&
+      typeof worktree === "object" &&
+      worktree !== null &&
+      "checkout_path" in worktree &&
+      typeof worktree.checkout_path === "string" &&
+      NodePath.resolve(worktree.checkout_path) === target
+    ) {
+      return workspace.workspace_id;
+    }
+  }
+  if (workspaces.length === 0) return undefined;
+  const panes = readHerdrList(await run(["pane", "list"]), "panes");
+  const workspaceIds = new Set(workspaces.map((workspace) => workspace.workspace_id));
+  const match = panes.find(
+    (pane) =>
+      typeof pane.workspace_id === "string" &&
+      workspaceIds.has(pane.workspace_id) &&
+      typeof pane.cwd === "string" &&
+      NodePath.resolve(pane.cwd) === target,
+  );
+  return typeof match?.workspace_id === "string" ? match.workspace_id : undefined;
 }
 
 function readCreatedTab(output: string): CodexHerdrTab {
@@ -77,14 +124,24 @@ export async function createCodexHerdrTab(
     readonly codexHome?: string;
   },
 ): Promise<CodexHerdrTab> {
+  const label = `T3 Codex ${input.threadId.slice(-8)}`;
+  const workspaceId = input.workspaceId ?? (await workspaceForCwd(run, input.cwd));
+  if (!workspaceId) {
+    const args = ["workspace", "create", "--cwd", input.cwd, "--no-focus"];
+    if (input.codexHome) args.push("--env", `CODEX_HOME=${expandHomePath(input.codexHome)}`);
+    const created = readCreatedTab(await run(args));
+    await run(["tab", "rename", created.tabId, label]);
+    return created;
+  }
   const args = [
     "tab",
     "create",
-    ...(input.workspaceId ? ["--workspace", input.workspaceId] : []),
+    "--workspace",
+    workspaceId,
     "--cwd",
     input.cwd,
     "--label",
-    `T3 Codex ${input.threadId.slice(-8)}`,
+    label,
     "--no-focus",
   ];
   if (input.codexHome) args.push("--env", `CODEX_HOME=${expandHomePath(input.codexHome)}`);

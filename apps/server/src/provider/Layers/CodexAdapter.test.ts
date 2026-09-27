@@ -884,6 +884,11 @@ const autoHerdrLayer = it.layer(
             if (!autoHerdrRunning) throw new Error("Herdr is not running");
             return JSON.stringify({ result: { workspaces: [{ workspace_id: "workspace-3" }] } });
           }
+          if (args[0] === "pane" && args[1] === "list") {
+            return JSON.stringify({
+              result: { panes: [{ workspace_id: "workspace-3", cwd: "/tmp/project" }] },
+            });
+          }
           if (args[1] === "create") {
             return JSON.stringify({
               result: { tab: { tab_id: "tab-7" }, root_pane: { pane_id: "pane-9" } },
@@ -902,7 +907,7 @@ const autoHerdrLayer = it.layer(
 );
 
 autoHerdrLayer("CodexAdapterLive automatic Herdr discovery", (it) => {
-  it.effect("uses the active workspace and a T3-owned socket only while Herdr is running", () =>
+  it.effect("uses the folder's workspace and a T3-owned socket only while Herdr is running", () =>
     Effect.gen(function* () {
       autoHerdrRunning = true;
       autoHerdrCalls.length = 0;
@@ -917,9 +922,13 @@ autoHerdrLayer("CodexAdapterLive automatic Herdr discovery", (it) => {
       });
 
       NodeAssert.deepStrictEqual(autoHerdrCalls[0], ["workspace", "list"]);
-      NodeAssert.deepStrictEqual(autoHerdrCalls[1], [
+      NodeAssert.deepStrictEqual(autoHerdrCalls[1], ["workspace", "list"]);
+      NodeAssert.deepStrictEqual(autoHerdrCalls[2], ["pane", "list"]);
+      NodeAssert.deepStrictEqual(autoHerdrCalls[3], [
         "tab",
         "create",
+        "--workspace",
+        "workspace-3",
         "--cwd",
         "/tmp/project",
         "--label",

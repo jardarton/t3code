@@ -28,9 +28,9 @@ covers installation and custom configuration.
 ## Use a thread in Herdr
 
 Start Herdr on the environment running T3 Code. When the `herdr` command is
-available to the T3 server and a Herdr workspace is open, new Codex threads
-create tabs in Herdr's active workspace. T3 keeps the Codex socket in its own
-data directory. No T3 setting is required.
+available to the T3 server, new Codex threads open in the Herdr workspace for
+their folder. If that folder has no workspace, T3 creates one. T3 keeps the
+Codex socket in its own data directory. No T3 setting is required.
 
 To always use one workspace, find its ID with `herdr workspace list` and set
 `T3CODE_HERDR_WORKSPACE_ID` in the Codex provider's environment variables in
