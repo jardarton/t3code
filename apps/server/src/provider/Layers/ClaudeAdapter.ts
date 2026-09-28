@@ -9,6 +9,8 @@
  */
 
 import * as NodeUtil from "node:util";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
 import {
   type CanUseTool,
   query,
@@ -74,6 +76,7 @@ import { HostProcessIsExecutable } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -82,6 +85,7 @@ import * as Fiber from "effect/Fiber";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -117,6 +121,16 @@ import {
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { spawnAndCollect } from "../providerSnapshot.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { createClaudeHerdrBridge, type ClaudeHerdrBridge } from "./ClaudeHerdrBridge.ts";
+import { startClaudeInHerdrTab } from "./ClaudeHerdrTab.ts";
+import {
+  closeHerdrTab,
+  createHerdrTab,
+  hasHerdrWorkspace,
+  makeHerdrCommand,
+  type HerdrCommand,
+  type HerdrTab,
+} from "./HerdrTab.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 const encodeHistoryArgs = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -225,6 +239,7 @@ const remapClaudeForkTurnBoundaries = (
 };
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
+class ClaudeHerdrError extends Data.TaggedError("ClaudeHerdrError")<{ cause: unknown }> {}
 type ClaudeTextStreamKind = Extract<
   RuntimeContentStreamKind,
   "assistant_text" | "reasoning_text" | "reasoning_summary_text"
@@ -412,8 +427,11 @@ interface ClaudeSessionContext {
   startInput: Parameters<ClaudeAdapterShape["startSession"]>[0];
   readonly turnStartMessageIds: Array<string | null>;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
+  readonly sendTurnSemaphore: Semaphore.Semaphore;
   readonly query: ClaudeQueryRuntime;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
+  herdrBridge: ClaudeHerdrBridge | undefined;
+  herdrTab: HerdrTab | undefined;
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
   currentApiModelId: string | undefined;
@@ -483,6 +501,7 @@ export interface ClaudeAdapterLiveOptions {
   readonly modelCatalog?: Effect.Effect<ClaudeModelCatalog>;
   /** Scoped-bucket names the driver's status probe last saw; see `claudeUsageLimits`. */
   readonly scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>;
+  readonly herdrCommand?: HerdrCommand;
 }
 
 function isUuid(value: string): boolean {
@@ -2083,6 +2102,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const serverConfig = yield* ServerConfig;
   const crypto = yield* Crypto.Crypto;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const hostProcessIsExecutable = yield* HostProcessIsExecutable;
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, options?.environment).pipe(
     Effect.provideService(Path.Path, path),
   );
@@ -2090,6 +2110,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     claudeSettings.binaryPath,
     claudeEnvironment,
   );
+  const herdrWorkspaceId = claudeEnvironment.T3CODE_HERDR_WORKSPACE_ID?.trim();
+  const herdrCommand = options?.herdrCommand ?? makeHerdrCommand(claudeEnvironment);
+  const herdrProbeCommand = options?.herdrCommand ?? makeHerdrCommand(claudeEnvironment, 750);
   const nativeEventLogger =
     options?.nativeEventLogger ??
     (options?.nativeEventLogPath !== undefined
@@ -2130,7 +2153,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
 
   const offerRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
-    Queue.offer(runtimeEventQueue, event).pipe(Effect.asVoid);
+    Queue.offer(runtimeEventQueue, event).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => sessions.get(event.threadId)?.herdrBridge?.publish(event)),
+      ),
+      Effect.asVoid,
+    );
+
+  const closeHerdrBridge = (threadId: ThreadId, bridge: ClaudeHerdrBridge) =>
+    Effect.tryPromise({
+      try: () => bridge.close(),
+      catch: (cause) => new ClaudeHerdrError({ cause }),
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("claude.herdr.bridge-close-failed", { threadId, error }),
+      ),
+    );
 
   const logNativeSdkMessage = Effect.fnUntraced(function* (
     context: ClaudeSessionContext,
@@ -4277,6 +4315,27 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     context.stopped = true;
 
+    if (context.herdrTab) {
+      const tabId = context.herdrTab.tabId;
+      context.herdrTab = undefined;
+      yield* Effect.tryPromise({
+        try: () => closeHerdrTab(herdrCommand, tabId),
+        catch: (cause) => new ClaudeHerdrError({ cause }),
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("claude.herdr.tab-close-failed", {
+            threadId: context.session.threadId,
+            error,
+          }),
+        ),
+      );
+    }
+    if (context.herdrBridge) {
+      const bridge = context.herdrBridge;
+      context.herdrBridge = undefined;
+      yield* closeHerdrBridge(context.session.threadId, bridge);
+    }
+
     for (const taskId of Array.from(context.liveTaskIds)) {
       if (!context.liveTaskIds.delete(taskId)) {
         continue;
@@ -5031,8 +5090,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ? [...resumeState.turnStartMessageIds]
           : Array.from({ length: resumeState?.turnCount ?? 0 }, () => null),
         promptQueue,
+        sendTurnSemaphore: yield* Semaphore.make(1),
         query: queryRuntime,
         streamFiber: undefined,
+        herdrBridge: undefined,
+        herdrTab: undefined,
         startedAt,
         basePermissionMode: permissionMode,
         currentApiModelId: apiModelId,
@@ -5103,6 +5165,98 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         providerRefs: {},
       });
 
+      const herdrAvailable = herdrWorkspaceId
+        ? true
+        : options?.createQuery === undefined || options.herdrCommand !== undefined
+          ? yield* Effect.tryPromise({
+              try: () => hasHerdrWorkspace(herdrProbeCommand),
+              catch: (cause) => new ClaudeHerdrError({ cause }),
+            }).pipe(Effect.orElseSucceed(() => false))
+          : false;
+      if (herdrAvailable) {
+        const socketName = NodeCrypto.createHash("sha256")
+          .update(threadId)
+          .digest("hex")
+          .slice(0, 20);
+        const socketPath = NodePath.join(
+          serverConfig.stateDir,
+          "claude-herdr",
+          `${socketName}.sock`,
+        );
+        const bridge = yield* Effect.tryPromise({
+          try: () =>
+            createClaudeHerdrBridge({
+              socketPath,
+              onPrompt: async (text) => {
+                await runPromise(sendTurnInternal({ threadId, input: text }, "herdr"));
+              },
+              onInterrupt: () => runPromise(stopSessionInternal(context)),
+            }),
+          catch: (cause) => new ClaudeHerdrError({ cause }),
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("claude.herdr.bridge-create-failed", { threadId, error }).pipe(
+              Effect.as(undefined),
+            ),
+          ),
+        );
+        if (bridge) {
+          context.herdrBridge = bridge;
+          const tab = yield* Effect.tryPromise({
+            try: () =>
+              createHerdrTab(herdrCommand, {
+                ...(herdrWorkspaceId ? { workspaceId: herdrWorkspaceId } : {}),
+                cwd: input.cwd ?? process.cwd(),
+                label: `T3 Claude ${threadId.slice(-8)}`,
+                environment: { ELECTRON_RUN_AS_NODE: "1" },
+              }),
+            catch: (cause) => new ClaudeHerdrError({ cause }),
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("claude.herdr.tab-create-failed", { threadId, error }).pipe(
+                Effect.as(undefined),
+              ),
+            ),
+          );
+          if (tab) {
+            context.herdrTab = tab;
+            const started = yield* Effect.tryPromise({
+              try: () =>
+                startClaudeInHerdrTab(herdrCommand, {
+                  paneId: tab.paneId,
+                  socketPath: bridge.socketPath,
+                  executablePath: process.execPath,
+                  ...(hostProcessIsExecutable ? {} : { entryPath: process.argv[1] }),
+                }),
+              catch: (cause) => new ClaudeHerdrError({ cause }),
+            }).pipe(
+              Effect.as(true),
+              Effect.catch((error) =>
+                Effect.logWarning("claude.herdr.tab-start-failed", { threadId, error }).pipe(
+                  Effect.as(false),
+                ),
+              ),
+            );
+            if (!started) {
+              context.herdrTab = undefined;
+              context.herdrBridge = undefined;
+              yield* Effect.tryPromise({
+                try: () => closeHerdrTab(herdrCommand, tab.tabId),
+                catch: (cause) => new ClaudeHerdrError({ cause }),
+              }).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("claude.herdr.tab-close-failed", { threadId, error }),
+                ),
+              );
+              yield* closeHerdrBridge(threadId, bridge);
+            }
+          } else {
+            context.herdrBridge = undefined;
+            yield* closeHerdrBridge(threadId, bridge);
+          }
+        }
+      }
+
       let streamFiber: Fiber.Fiber<void, never>;
       streamFiber = runFork(
         Effect.exit(runSdkStream(context)).pipe(
@@ -5134,7 +5288,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
-  const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
+  const sendTurnUnlocked = Effect.fn("sendTurnUnlocked")(function* (
+    input: ProviderSendTurnInput,
+    origin: "t3" | "herdr" = "t3",
+  ) {
     const context = yield* requireSession(input.threadId);
     const modelCatalog = yield* modelCatalogEffect;
     const selectedModel =
@@ -5264,6 +5421,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       ),
     });
 
+    if (origin === "herdr" && input.input) {
+      const stamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent({
+        type: "item.completed",
+        eventId: stamp.eventId,
+        provider: PROVIDER,
+        createdAt: stamp.createdAt,
+        threadId: input.threadId,
+        turnId,
+        itemId: RuntimeItemId.make(`claude-herdr:${stamp.eventId}`),
+        payload: { itemType: "user_message", status: "completed", detail: input.input },
+        providerRefs: {},
+      });
+    }
+
     if (steeringTurnState === null) context.turnStartMessageIds.push(turnId);
     yield* updateResumeCursor(context);
     yield* Queue.offer(context.promptQueue, {
@@ -5274,6 +5446,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           : message,
     }).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)));
 
+    if (origin === "t3" && input.input) context.herdrBridge?.publishPrompt(input.input);
+
     return {
       threadId: context.session.threadId,
       turnId,
@@ -5282,6 +5456,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         : {}),
     };
   });
+  const sendTurnInternal = Effect.fn("sendTurn")(function* (
+    input: ProviderSendTurnInput,
+    origin: "t3" | "herdr" = "t3",
+  ) {
+    const context = yield* requireSession(input.threadId);
+    return yield* context.sendTurnSemaphore.withPermit(sendTurnUnlocked(input, origin));
+  });
+  const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) => sendTurnInternal(input);
 
   const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (threadId, _turnId) {

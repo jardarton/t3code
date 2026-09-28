@@ -36,7 +36,7 @@ and [flake.lock](flake.lock). It is independent of the Codex/Herdr change below.
 A Codex thread started in T3 Code also gets a Herdr tab on the same environment
 machine. Both T3 and the Codex CLI in that tab connect to the **same running
 Codex app-server and provider thread**. Messages sent from either surface appear
-in the T3 thread. This is Codex-only; the fork does not add a Claude Code bridge.
+in the T3 thread. Claude Code uses the terminal bridge described below.
 
 With Herdr running, no T3 configuration is needed. On each Codex session start,
 the server asks `herdr workspace list` whether Herdr is available. The probe
@@ -72,9 +72,10 @@ and one provider thread shared by T3 and the CLI. Opening the same saved Codex
 thread in a second app-server would not provide the live shared session.
 
 [CodexAdapter](apps/server/src/provider/Layers/CodexAdapter.ts) owns the tab for
-the life of its provider session; [CodexHerdrTab](apps/server/src/provider/Layers/CodexHerdrTab.ts)
-contains the Herdr CLI commands. The tab uses the thread's working directory,
-the configured Codex home and binary, and a short thread-ID label. A fresh
+the life of its provider session; [HerdrTab](apps/server/src/provider/Layers/HerdrTab.ts)
+contains the workspace and tab commands shared with Claude. The tab uses the
+thread's working directory, the configured Codex home and binary, and a short
+thread-ID label. A fresh
 thread's CLI starts on the first `turn/started`: Codex saves the rollout when
 the first turn starts and answers an earlier `thread/resume` with "no rollout
 found". Waiting for `turn/completed` instead left the tab empty for the whole
@@ -92,8 +93,8 @@ an orphaned Herdr tab; this patch does not reconcile tabs after a crash.
 When a user sends a message from the attached Codex CLI,
 [ProviderRuntimeIngestion](apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts)
 imports that user message once into T3's thread history. T3-originated prompts
-are already persisted and are not duplicated. The UI, WebSocket contracts, and
-other provider adapters are unchanged.
+are already persisted and are not duplicated. The UI and WebSocket contracts
+are unchanged.
 
 Focused tests cover socket transport, Herdr discovery and tab lifecycle,
 fresh and resumed Codex sessions, and CLI-originated message ingestion. An
@@ -101,3 +102,25 @@ isolated manual test with the real Codex CLI showed a T3 turn in `codex resume`
 and a CLI message arriving back in T3. A live Herdr tab has not yet been tested
 from this workspace; the Herdr command boundary is exercised with a stubbed
 command runner.
+
+## Claude Code threads in Herdr
+
+Claude's Agent SDK runs its own CLI subprocess and has no equivalent of Codex's
+live app-server attachment. Starting `claude --resume` in Herdr would create a
+second process with an independently loaded conversation. Instead, T3 opens a
+Herdr tab running its hidden `__claude-herdr` terminal client. A private Unix
+socket under the environment state directory connects that client to the live
+Claude adapter. Prompts sent in the tab enter the same SDK prompt queue as T3
+prompts, and assistant text streams back to the tab. Terminal prompts are
+imported into T3's thread history once; T3 prompts are already persisted.
+
+The shared [HerdrTab](apps/server/src/provider/Layers/HerdrTab.ts) helper routes
+Claude tabs by folder using the same workspace policy as Codex. The adapter owns
+the socket and tab for the provider session and closes both when it stops.
+Approvals and questions still use T3's existing UI. The terminal client offers
+`/interrupt` (which stops the session and closes its tab) and `/exit`, but it is
+not the full Claude CLI and does not support
+Claude's slash commands or replay earlier messages when attaching to an
+already-running session. Herdr command failures are logged without failing the
+Claude session. The browser, desktop, and mobile clients all use the same server
+bridge when connected to that environment.

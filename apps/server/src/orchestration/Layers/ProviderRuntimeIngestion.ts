@@ -1959,7 +1959,7 @@ const make = Effect.gen(function* () {
       }
 
       if (
-        event.provider === "codex" &&
+        (event.provider === "codex" || event.provider === "claudeAgent") &&
         event.type === "item.completed" &&
         event.payload.itemType === "user_message" &&
         eventTurnId !== undefined &&
@@ -1969,10 +1969,15 @@ const make = Effect.gen(function* () {
           threadId: thread.id,
           turnId: eventTurnId,
         });
-        // T3 already persisted the prompt for turns it started. A Codex TUI
-        // turn has no pending T3 message, so import that prompt once.
-        if (Option.isSome(providerTurn) && providerTurn.value.pendingMessageId === null) {
-          const messageId = MessageId.make(`codex-cli:${event.itemId ?? event.eventId}`);
+        // T3 already persisted its Codex prompt. Claude user-message items are
+        // emitted only for terminal prompts, including those steering a T3 turn.
+        if (
+          Option.isSome(providerTurn) &&
+          (event.provider === "claudeAgent" || providerTurn.value.pendingMessageId === null)
+        ) {
+          const messageId = MessageId.make(
+            `${event.provider === "codex" ? "codex-cli" : "claude-terminal"}:${event.itemId ?? event.eventId}`,
+          );
           if (!(yield* getThreadMessageById(thread.id, messageId))) {
             yield* orchestrationEngine.dispatch({
               type: "thread.message.user.append",

@@ -4,6 +4,7 @@ import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeNet from "node:net";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type {
@@ -175,6 +176,7 @@ function makeHarness(config?: {
   readonly environment?: ClaudeAdapterLiveOptions["environment"];
   readonly getSessionMessages?: ClaudeAdapterLiveOptions["getSessionMessages"];
   readonly forkSession?: ClaudeAdapterLiveOptions["forkSession"];
+  readonly herdrCommand?: ClaudeAdapterLiveOptions["herdrCommand"];
 }) {
   const query = new FakeClaudeQuery();
   const queries = [query];
@@ -192,6 +194,7 @@ function makeHarness(config?: {
     modelCatalog: Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
     ...(config?.getSessionMessages ? { getSessionMessages: config.getSessionMessages } : {}),
     ...(config?.forkSession ? { forkSession: config.forkSession } : {}),
+    ...(config?.herdrCommand ? { herdrCommand: config.herdrCommand } : {}),
     createQuery: (input) => {
       if (createInput && config?.getSessionMessages) queries.push(new FakeClaudeQuery());
       createInput = input;
@@ -371,6 +374,80 @@ const sendCompletedClaudeTurn = (
   });
 
 describe("ClaudeAdapterLive", () => {
+  it.effect(
+    "shares its live Claude session with a Herdr terminal and closes the tab on stop",
+    () => {
+      const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-herdr-"));
+      const calls: Array<ReadonlyArray<string>> = [];
+      const harness = makeHarness({
+        cwd: directory,
+        baseDir: directory,
+        herdrCommand: async (args) => {
+          calls.push([...args]);
+          if (args[0] === "workspace") {
+            return JSON.stringify({
+              result: {
+                workspaces: [{ workspace_id: "w1", worktree: { checkout_path: directory } }],
+              },
+            });
+          }
+          if (args[0] === "tab" && args[1] === "create") {
+            return JSON.stringify({
+              result: { tab: { tab_id: "w1:t2" }, root_pane: { pane_id: "w1:p2" } },
+            });
+          }
+          return "{}";
+        },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          cwd: directory,
+          runtimeMode: "full-access",
+        });
+        const paneRun = calls.find((args) => args[0] === "pane" && args[1] === "run");
+        assert.ok(paneRun);
+        const socketPath = paneRun[3]?.match(/__claude-herdr '([^']+)'$/u)?.[1];
+        assert.ok(socketPath);
+        const socket = yield* Effect.promise(
+          () =>
+            new Promise<NodeNet.Socket>((resolve, reject) => {
+              const client = NodeNet.createConnection(socketPath);
+              client.once("connect", () => resolve(client));
+              client.once("error", reject);
+            }),
+        );
+        const userEvent = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) => event.type === "item.completed" && event.payload.itemType === "user_message",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        socket.write(`${encodeUnknownJsonString({ type: "prompt", text: "hi" })}\n`);
+        const observed = yield* Fiber.join(userEvent);
+        assert.equal(observed._tag, "Some");
+        if (observed._tag === "Some" && observed.value.type === "item.completed") {
+          assert.equal(observed.value.payload.detail, "hi");
+        }
+        assert.equal(
+          yield* Effect.promise(() => readFirstPromptText(harness.getLastCreateQueryInput())),
+          "hi",
+        );
+        yield* adapter.stopSession(THREAD_ID);
+        assert.deepEqual(calls.at(-1), ["tab", "close", "w1:t2"]);
+        socket.destroy();
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.ensuring(
+          Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
+        ),
+      );
+    },
+  );
+
   it.effect("returns validation error for non-claude provider on startSession", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

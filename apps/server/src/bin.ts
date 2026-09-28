@@ -20,6 +20,7 @@ import { serviceCommand } from "./cli/service.ts";
 import { uninstallCommand } from "./cli/uninstall.ts";
 import { updateCommand } from "./cli/update.ts";
 import { claudeHistoryCommand } from "./cli/claudeHistory.ts";
+import { runClaudeHerdrClient } from "./cli/claudeHerdr.ts";
 import { serviceLauncherCommand } from "./cli/serviceLauncher.ts";
 import { servicePreflightCommand } from "./cli/servicePreflight.ts";
 import { sshHelperCommand } from "./cli/sshHelper.ts";
@@ -87,9 +88,21 @@ if (
     runtimeMain: import.meta.main,
   })
 ) {
-  Command.run(cli, { version: packageJson.version }).pipe(
-    Effect.scoped,
-    Effect.provide(CliRuntimeLayer),
-    NodeRuntime.runMain,
-  );
+  if (process.argv[2] === "__claude-herdr") {
+    // The server bundle imports modules that retain handles after this small
+    // terminal client exits, so flush its last write and end the process.
+    void runClaudeHerdrClient(process.argv[3] ?? "").then(
+      () => process.stdout.write("", () => process.exit(0)),
+      (error: unknown) =>
+        process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`, () =>
+          process.exit(1),
+        ),
+    );
+  } else {
+    Command.run(cli, { version: packageJson.version }).pipe(
+      Effect.scoped,
+      Effect.provide(CliRuntimeLayer),
+      NodeRuntime.runMain,
+    );
+  }
 }

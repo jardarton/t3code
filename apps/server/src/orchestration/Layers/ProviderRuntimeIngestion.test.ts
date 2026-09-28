@@ -482,6 +482,90 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("turn failed");
   });
 
+  it("imports a Claude Herdr prompt once", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const provider = ProviderDriverKind.make("claudeAgent");
+    const turnId = asTurnId("turn-from-herdr");
+    const userMessage = {
+      type: "item.completed" as const,
+      eventId: asEventId("evt-claude-herdr-message"),
+      provider,
+      threadId,
+      turnId,
+      itemId: asItemId("claude-herdr-user-message"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: { itemType: "user_message" as const, detail: "Prompt from Claude terminal" },
+    };
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("evt-claude-herdr-turn"),
+        provider,
+        threadId,
+        turnId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+      },
+      userMessage,
+    ]);
+    await harness.emitAndDrain([
+      { ...userMessage, eventId: asEventId("evt-claude-herdr-message-replayed") },
+    ]);
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.messages.filter((message) => message.role === "user").map((message) => message.text),
+    ).toEqual(["Prompt from Claude terminal"]);
+
+    await harness.emitAndDrain([
+      {
+        type: "turn.completed",
+        eventId: asEventId("evt-claude-herdr-turn-completed"),
+        provider,
+        threadId,
+        turnId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+        payload: { state: "completed" },
+      },
+    ]);
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-t3-claude-turn"),
+      threadId,
+      message: {
+        messageId: MessageId.make("t3-claude-prompt"),
+        role: "user",
+        text: "Prompt from T3",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: "2026-01-01T00:00:04.000Z",
+    });
+    const steeringTurnId = asTurnId("turn-t3-claude");
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("evt-t3-claude-turn"),
+        provider,
+        threadId,
+        turnId: steeringTurnId,
+        createdAt: "2026-01-01T00:00:05.000Z",
+      },
+      {
+        ...userMessage,
+        eventId: asEventId("evt-claude-herdr-steer"),
+        itemId: asItemId("claude-herdr-steer"),
+        turnId: steeringTurnId,
+        createdAt: "2026-01-01T00:00:06.000Z",
+        payload: { itemType: "user_message" as const, detail: "Steer from Herdr" },
+      },
+    ]);
+    const steered = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      steered?.messages.filter((message) => message.role === "user").map((message) => message.text),
+    ).toEqual(["Prompt from Claude terminal", "Prompt from T3", "Steer from Herdr"]);
+  });
+
   it("imports a Codex CLI prompt without duplicating a T3-owned prompt", async () => {
     const harness = await createHarness();
     const threadId = asThreadId("thread-1");
