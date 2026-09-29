@@ -14,29 +14,36 @@ let
     rev = "c4a7237ec8f4654e867546f9f409749300f1bf4c";
     hash = "sha256-FbeeEBAg9ih6DkAsXdU6ruZwkC7A2u2zYBvblpl54q0=";
   };
+  # Keep the fetched closure stable when consumers override nixpkgs.
+  pnpmWorkspaces = [
+    "@t3tools/monorepo"
+    "t3..."
+    "@t3tools/scripts..."
+  ]
+  ++ lib.optional desktop "@t3tools/desktop...";
   unwrapped = t3code.unwrapped.overrideAttrs (
     old:
     {
       version = (lib.importJSON ../apps/server/package.json).version;
       src = lib.cleanSource ../.;
+      inherit pnpmWorkspaces;
       # The license plugin otherwise downloads these during the sandboxed build.
       postPatch = old.postPatch + ''
         mkdir -p .generated/third-party-licenses/spdx/v3.28.0
-        cp ${spdx}/json/details/*.json .generated/third-party-licenses/spdx/v3.28.0/
+        # Newer nixpkgs already copies these from the store as read-only files.
+        cp --remove-destination ${spdx}/json/details/*.json .generated/third-party-licenses/spdx/v3.28.0/
       '';
       pnpmDeps = fetchPnpmDeps {
         pnpm = pnpm_11;
         pname = "t3code-deps";
         src = lib.cleanSource ../.;
-        pnpmWorkspaces = lib.filter (
-          workspace: desktop || workspace != "@t3tools/desktop..."
-        ) old.pnpmWorkspaces;
+        inherit pnpmWorkspaces;
         fetcherVersion = 4;
         hash =
           if desktop then
-            "sha256-z30cDexO3mOTGGhTaPw0eQD8RETM4e15Djx/vALoH+0="
+            "sha256-xdS9+PqIDULKIu3+lQRMabA23D0dxCEME96NhFggWPY="
           else
-            "sha256-zglmFa7l7VoCNSf6+XnOtrAdjNQLqVyy7CZPvXFquLU=";
+            "sha256-aDFCpcq3I4lT8o0zaTqQwmSqif+GQbCnhYUGjU7qd2M=";
       };
       meta = old.meta // {
         mainProgram = if desktop then "t3code-desktop" else "t3";
@@ -45,7 +52,6 @@ let
     }
     // lib.optionalAttrs (!desktop) {
       pname = "t3-unwrapped";
-      pnpmWorkspaces = lib.filter (workspace: workspace != "@t3tools/desktop...") old.pnpmWorkspaces;
       buildPhase = ''
         runHook preBuild
         pnpm exec vp run --filter t3 build
