@@ -4,20 +4,6 @@ T3 Code uses Claude Code's login and configuration. Start with the default provi
 for one account; [provider setup](./install.md#providers) covers installation and
 shared provider settings.
 
-## Use a thread in Herdr
-
-Start Herdr on the environment running T3 Code. New Claude threads open in the
-Herdr workspace for their folder, or create a workspace when needed. Type a
-message in the tab to continue the same live T3 thread; responses from either
-surface appear in the tab. Use `/interrupt` to stop the session and close its
-tab, or `/exit` to leave the terminal client. Answer approval and question
-prompts in T3 Code.
-
-The tab is a terminal view of T3's Claude Code session, so Claude CLI slash
-commands are not available there. The `herdr` command must be on the T3 server's
-PATH. For a named Herdr session, set `HERDR_SESSION` in the Claude provider
-instance's environment under **Settings > Providers**.
-
 ## Separate accounts or configurations
 
 Use a separate Claude config directory for each account. This also works for named

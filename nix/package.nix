@@ -5,6 +5,7 @@
   pnpm_11,
   fetchFromGitHub,
   nodejs,
+  electron_44,
   desktop ? true,
 }:
 let
@@ -21,7 +22,8 @@ let
     "@t3tools/scripts..."
   ]
   ++ lib.optional desktop "@t3tools/desktop...";
-  unwrapped = t3code.unwrapped.overrideAttrs (
+  # The nixpkgs recipe still names its Electron argument after the older major.
+  unwrapped = (t3code.unwrapped.override { electron_43 = electron_44; }).overrideAttrs (
     old:
     {
       version = (lib.importJSON ../apps/server/package.json).version;
@@ -41,9 +43,9 @@ let
         fetcherVersion = 4;
         hash =
           if desktop then
-            "sha256-xdS9+PqIDULKIu3+lQRMabA23D0dxCEME96NhFggWPY="
+            "sha256-IvBYaCbOYy/5Sf5hziU9bCkrcm5SZJHwTQsXiYW7dMo="
           else
-            "sha256-aDFCpcq3I4lT8o0zaTqQwmSqif+GQbCnhYUGjU7qd2M=";
+            "sha256-k23+8qO6/P3VrNFUl854DxhWfZo0tjfLfNkdkZnKUGY=";
       };
       meta = old.meta // {
         mainProgram = if desktop then "t3code-desktop" else "t3";
