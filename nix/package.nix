@@ -22,8 +22,7 @@ let
     "@t3tools/scripts..."
   ]
   ++ lib.optional desktop "@t3tools/desktop...";
-  # The nixpkgs recipe still names its Electron argument after the older major.
-  unwrapped = (t3code.unwrapped.override { electron_43 = electron_44; }).overrideAttrs (
+  unwrapped = t3code.unwrapped.overrideAttrs (
     old:
     {
       version = (lib.importJSON ../apps/server/package.json).version;
