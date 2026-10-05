@@ -44,7 +44,7 @@ let
           if desktop then
             "sha256-IvBYaCbOYy/5Sf5hziU9bCkrcm5SZJHwTQsXiYW7dMo="
           else
-            "sha256-k23+8qO6/P3VrNFUl854DxhWfZo0tjfLfNkdkZnKUGY=";
+            "sha256-NAbIEfisLQ6y54yZHVxHRR7JbYOZHJAGMJ4oFPUXpYQ=";
       };
       meta = old.meta // {
         mainProgram = if desktop then "t3code-desktop" else "t3";
