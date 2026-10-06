@@ -42,7 +42,7 @@ let
         fetcherVersion = 4;
         hash =
           if desktop then
-            "sha256-IvBYaCbOYy/5Sf5hziU9bCkrcm5SZJHwTQsXiYW7dMo="
+            "sha256-WZSV8+ugCLfls7jW7hPFoL4wYAffpER71zt2VhaTVzQ="
           else
             "sha256-NAbIEfisLQ6y54yZHVxHRR7JbYOZHJAGMJ4oFPUXpYQ=";
       };
