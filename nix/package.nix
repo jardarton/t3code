@@ -5,7 +5,6 @@
   pnpm_11,
   fetchFromGitHub,
   nodejs,
-  electron_44,
   stdenv,
   libsecret,
   desktop ? true,
@@ -24,7 +23,7 @@ let
     "@t3tools/scripts..."
   ]
   ++ lib.optional desktop "@t3tools/desktop...";
-  unwrapped = (t3code.unwrapped.override { electron_43 = electron_44; }).overrideAttrs (
+  unwrapped = t3code.unwrapped.overrideAttrs (
     old:
     {
       version = (lib.importJSON ../apps/server/package.json).version;
