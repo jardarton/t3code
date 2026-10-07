@@ -60,7 +60,7 @@ Herdr, which is useful for direct Codex CLI attachment.
 The transport and tab lifecycle live in
 [CodexAdapterV2](apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts).
 In socket mode, its client factory starts `codex app-server --listen unix://…`;
-[CodexSocketStdio](apps/server/src/provider/Layers/CodexSocketStdio.ts) adapts
+[CodexSocketStdio](apps/server/src/provider/CodexSocketStdio.ts) adapts
 WebSocket frames to the JSONL client through
 [`layerStdio`](packages/effect-codex-app-server/src/client.ts). The CLI attaches
 with `codex resume <provider-thread-id> --remote unix://…`, sharing the same
