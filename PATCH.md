@@ -28,8 +28,26 @@ for CLI-only installation; the default desktop package already includes both
 commands, so there is no need to install both packages. Provider CLIs can be
 configured with the package's `override` options or installed separately.
 
+On Linux, the desktop requires an unlocked Secret Service keyring to save server
+credentials. The package includes the runtime libraries for `node-pty` and
+Electron's libsecret backend; it does not fall back to plaintext storage.
+NixOS users can install the desktop and enable GNOME Keyring together:
+
+```nix
+imports = [ inputs.t3code.nixosModules.desktop ];
+programs.t3code-desktop.enable = true;
+```
+
+If installing only via Home Manager, enable `services.gnome.gnome-keyring.enable`
+in your NixOS configuration (or provide another compatible Secret Service).
+Log out and back in after enabling it. Custom login managers such as greetd may
+also require `security.pam.services.greetd.enableGnomeKeyring = true`; automatic
+unlocking needs a password login and a matching keyring password. For autologin,
+unlock the keyring manually using Seahorse before adding a server.
+
 The packaging lives in [flake.nix](flake.nix), [nix/package.nix](nix/package.nix),
-and [flake.lock](flake.lock). It is independent of the Codex/Herdr change below.
+[nix/nixos-module.nix](nix/nixos-module.nix), and [flake.lock](flake.lock).
+It is independent of the Codex/Herdr change below.
 
 ## Codex threads in Herdr
 

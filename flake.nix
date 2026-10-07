@@ -32,6 +32,7 @@
           program = "${self.packages.${system}.t3}/bin/t3";
         };
       });
+      nixosModules.desktop = import ./nix/nixos-module.nix;
       formatter = forEachSystem (system: pkgsFor.${system}.nixfmt);
     };
 }

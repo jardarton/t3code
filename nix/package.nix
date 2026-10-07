@@ -5,7 +5,8 @@
   pnpm_11,
   fetchFromGitHub,
   nodejs,
-  electron_44,
+  stdenv,
+  libsecret,
   desktop ? true,
 }:
 let
@@ -46,6 +47,23 @@ let
           else
             "sha256-gZ/Q/YmZnG1XE9jlF4sQNfNhITS+67exaD03yiy0e90=";
       };
+      # Upstream skips ELF patching in the vendored dependency tree. node-pty
+      # still needs libstdc++, and Electron dlopens libsecret for safeStorage.
+      postInstall =
+        (old.postInstall or "")
+        + lib.optionalString stdenv.hostPlatform.isLinux ''
+          wrapProgram "$out/bin/t3" \
+            --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ stdenv.cc.cc.lib ]}
+        ''
+        + lib.optionalString (desktop && stdenv.hostPlatform.isLinux) ''
+          wrapProgram "$out/bin/t3code-desktop" \
+            --prefix LD_LIBRARY_PATH : ${
+              lib.makeLibraryPath [
+                stdenv.cc.cc.lib
+                libsecret
+              ]
+            }
+        '';
       meta = old.meta // {
         mainProgram = if desktop then "t3code-desktop" else "t3";
         changelog = "https://github.com/jardarton/t3code/blob/main/PATCH.md";
