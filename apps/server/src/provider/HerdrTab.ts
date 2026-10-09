@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 
-import { expandHomePath } from "../pathExpansion.ts";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 
 const execFileAsync = NodeUtil.promisify(NodeChildProcess.execFile);
 
