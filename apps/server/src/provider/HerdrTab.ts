@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
+import * as NodeOs from "node:os";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 
@@ -126,7 +127,7 @@ export async function createHerdrTab(
 ): Promise<HerdrTab> {
   const environmentArgs = Object.entries(input.environment ?? {}).flatMap(([key, value]) => [
     "--env",
-    `${key}=${expandHomePath(value)}`,
+    `${key}=${expandHomePath(value, NodeOs.homedir())}`,
   ]);
   const workspaceId = input.workspaceId ?? (await workspaceForCwd(run, input.cwd));
   if (!workspaceId) {

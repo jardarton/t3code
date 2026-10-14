@@ -1967,7 +1967,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
     socketMode?: {
-      readonly onContinuation: (request: ProviderContinuationRequest) => Effect.Effect<void>;
+      readonly onContinuation: (
+        request: ProviderContinuationRequests.ProviderContinuationRequest,
+      ) => Effect.Effect<void>;
     },
   ) =>
     Effect.gen(function* () {
@@ -2098,7 +2100,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         type: "userMessage",
         content: [{ type: "text", text: cliPrompt, text_elements: [] }],
       };
-      const cliReady = yield* Deferred.make<ProviderContinuationRequest>();
+      const cliReady =
+        yield* Deferred.make<ProviderContinuationRequests.ProviderContinuationRequest>();
       const secondTerminal = yield* Deferred.make<void>();
       const requests: string[] = [];
       const inbound = (method: string, params: unknown): CodexReplay.CodexAppServerReplayEntry => ({
@@ -2198,7 +2201,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
         0,
       );
-    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
   );
 
   it.effect("imports native steering once and ignores T3 prompt echoes", () =>
@@ -2266,7 +2274,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           : undefined,
         "steer",
       );
-    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
   );
 
   it.effect.each(["supported", "unsupported", "invalid"] as const)(

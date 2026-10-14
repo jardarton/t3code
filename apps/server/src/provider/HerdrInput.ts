@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import type {
   ExternalUserMessageDispatchError,
   ProviderContinuationRequest,
-} from "@t3tools/provider-core/server/continuationRequests";
+} from "@t3tools/provider-core/server/ProviderContinuationRequests";
 
 /** Wait until the orchestrator has accepted terminal input before acknowledging it. */
 export const requestHerdrInput = Effect.fn("HerdrInput.request")(function* (

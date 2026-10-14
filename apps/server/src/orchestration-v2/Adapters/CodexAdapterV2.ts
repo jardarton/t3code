@@ -1597,7 +1597,7 @@ export const layerAppServerClientFactory: Layer.Layer<
                 yield* makeCodexSocketStdio(input.socketPath).pipe(
                   Effect.mapError(
                     (cause) =>
-                      new ProviderAdapterOpenSessionError({
+                      new ProviderAdapter.ProviderAdapterOpenSessionError({
                         driver: CODEX_PROVIDER,
                         providerSessionId: input.providerSessionId,
                         cause,
@@ -1803,7 +1803,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           yield* fileSystem.makeDirectory(socketDir, { recursive: true, mode: 0o700 }).pipe(
             Effect.mapError(
               (cause) =>
-                new ProviderAdapterOpenSessionError({
+                new ProviderAdapter.ProviderAdapterOpenSessionError({
                   driver: CODEX_PROVIDER,
                   providerSessionId: input.providerSessionId,
                   cause,
@@ -1820,7 +1820,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ...(socketPath ? { socketPath } : {}),
         });
         const herdrTabs = new Map<string, CodexHerdrTab>();
-        const herdrThreads = new Map<string, ProviderAdapterV2TurnInput>();
+        const herdrThreads = new Map<string, ProviderAdapter.ProviderAdapterV2TurnInput>();
         const launchingHerdrThreads = new Set<string>();
         const externalTurns = new Map<
           string,
@@ -1875,7 +1875,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
         );
         const launchHerdr = Effect.fn("CodexAdapterV2.launchHerdr")(function* (
-          turnInput: ProviderAdapterV2TurnInput,
+          turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
           nativeThreadId: string,
         ) {
           herdrThreads.set(nativeThreadId, turnInput);
