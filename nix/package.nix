@@ -43,9 +43,9 @@ let
         fetcherVersion = 4;
         hash =
           if desktop then
-            "sha256-xRmOrOZbBljaF1IJr0JFUFzdhkld6+ehLIlpVOg/J3E="
+            "sha256-t7DWJow4pdsqbFnMA+p3TDjYkr1asdFStnvnDxuxnFw="
           else
-            "sha256-8MzpEEcNhnii40HKZVMMOUIY/mm6yFodxFlPN6YmsJA=";
+            "sha256-7nqrrXEXPPT8ok/tVMamdyy2nV7U9xPk2ws0+UF1p8E=";
       };
       # Upstream skips ELF patching in the vendored dependency tree. node-pty
       # still needs libstdc++, and Electron dlopens libsecret for safeStorage.
