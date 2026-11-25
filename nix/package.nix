@@ -97,5 +97,6 @@ t3code.override {
   t3code-resource-monitor = t3code.resourceMonitor.overrideAttrs {
     inherit (unwrapped) src version;
     sourceRoot = "source/native/resource-monitor";
+    cargoHash = "sha256-deTy3FFcOwhxZnEbWDXFGVFFoKUex434ADJQtchVzbs=";
   };
 }
